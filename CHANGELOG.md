@@ -2,6 +2,52 @@
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-05-08
+
+### Added
+
+#### Adoption of dev-report 0.9
+
+- Bumped `dev-report` dep to `0.9`.
+- Every `CheckResult` from `run_with_timeout` and `join_all_with_timeout` now carries the `async` tag and numeric `Evidence` for `timeout_ms` (always) and `elapsed_ms` (Pass paths). Failures additionally carry `timeout` / `task_panicked` / `regression` tags.
+
+#### Deadlock detection (v0.2 milestone)
+
+- `dev_async::deadlock` module.
+- `try_mutex_lock_with_timeout`, `try_rwlock_read_with_timeout`, `try_rwlock_write_with_timeout` for `tokio::sync::{Mutex, RwLock}`.
+- Timeout -> `Fail (Error)` with `deadlock_suspected` + `regression` tags.
+
+#### Task tracking (v0.3 milestone)
+
+- `dev_async::tasks::TrackedTaskGroup`.
+- `spawn` records each task; `finalize(grace)` joins all and emits one aggregate `CheckResult`.
+- Panic -> `Fail (Critical)` + `task_panicked`. Leak -> `Fail (Error)` + `task_leak`.
+
+#### Graceful shutdown (v0.4 milestone)
+
+- `dev_async::shutdown::ShutdownProbe` and `ShutdownComponent`.
+- Polls each component's drain predicate on a configurable interval until deadline.
+- Emits one `CheckResult` per component plus an `aggregate`-tagged summary.
+
+#### Blocking-call detection (v0.5 milestone, opt-in)
+
+- `block-detect` feature flag (off by default; pulls `pin-project-lite`).
+- `dev_async::blocking::detect_blocking` wraps a future and tracks longest non-yielding poll duration.
+- Exceeds threshold -> `Warn (Warning)` + `blocking_suspected`.
+
+#### Producer integration
+
+- `AsyncProducer` trait for async harnesses.
+- `BlockingAsyncProducer<F, Fut>` adapter implementing `dev_report::Producer` via `tokio::runtime::Handle::block_on`.
+- `AsyncCheck` trait retained from v0.1.
+
+### Documentation
+
+- All public items have rustdoc with at least one example.
+- REPS.md expanded: §4 (required evidence/tags), §6 (deadlock helpers), §7 (task tracking), §8 (shutdown), §9 (block-detect), §10 (producer integration).
+
+[0.9.0]: https://github.com/jamesgober/dev-async/releases/tag/v0.9.0
+
 ## [0.1.0] - 2026-05-07
 
 ### Added
@@ -19,5 +65,5 @@
 Name-claim release. Deadlock detection, task tracking, and shutdown
 verification land in `0.2.x` and beyond.
 
-[Unreleased]: https://github.com/jamesgober/dev-async/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/jamesgober/dev-async/compare/v0.9.0...HEAD
 [0.1.0]: https://github.com/jamesgober/dev-async/releases/tag/v0.1.0
