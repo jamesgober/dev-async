@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-05-09
+
+### Added
+
+- `BlockingAsyncProducer::with_new_runtime(factory)` constructor — owns a fresh multi-thread `tokio::runtime::Runtime` for the lifetime of the producer.
+- `BlockingAsyncProducer::with_current_thread_runtime(factory)` constructor — owns a `current_thread` runtime; lighter-weight for tests and single-threaded harnesses.
+- The existing `BlockingAsyncProducer::new(handle, factory)` is unchanged. New constructors return `io::Result<Self>` because runtime construction can fail on resource exhaustion.
+
+### Fixed
+
+- Broken intra-doc link `[`blocking`]` in the crate-level docstring would warn under `cargo doc` when the `block-detect` feature is disabled. The link is now a plain code span.
+
+[0.9.1]: https://github.com/jamesgober/dev-async/releases/tag/v0.9.1
+
 ## [0.9.0] - 2026-05-08
 
 ### Added
@@ -65,5 +79,5 @@
 Name-claim release. Deadlock detection, task tracking, and shutdown
 verification land in `0.2.x` and beyond.
 
-[Unreleased]: https://github.com/jamesgober/dev-async/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/jamesgober/dev-async/compare/v0.9.1...HEAD
 [0.1.0]: https://github.com/jamesgober/dev-async/releases/tag/v0.1.0

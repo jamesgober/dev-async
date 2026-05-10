@@ -33,8 +33,9 @@
 //! - [`deadlock`] — `try_lock_with_timeout` helpers.
 //! - [`tasks`] — `TrackedTaskGroup` for leak detection.
 //! - [`shutdown`] — `ShutdownProbe` for graceful-shutdown verification.
-//! - [`blocking`] (feature `block-detect`) — heuristic blocking-call
-//!   detection inside async tasks.
+//! - `blocking` (feature `block-detect`) — heuristic blocking-call
+//!   detection inside async tasks (visible in rustdoc when the
+//!   feature is enabled).
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![warn(missing_docs)]
@@ -260,6 +261,11 @@ where
     Fut: Future<Output = Report>,
 {
     handle: tokio::runtime::Handle,
+    /// Owned runtime, when constructed via `with_new_runtime` /
+    /// `with_current_thread_runtime`. `None` when borrowing an
+    /// externally-supplied handle. Kept alive for the lifetime of the
+    /// producer so `block_on` always has a valid runtime.
+    _owned_runtime: Option<tokio::runtime::Runtime>,
     factory: F,
 }
 
@@ -268,12 +274,88 @@ where
     F: Fn() -> Fut,
     Fut: Future<Output = Report>,
 {
-    /// Build a new adapter bound to `handle`.
+    /// Build a new adapter bound to an externally-supplied `handle`.
     ///
     /// `factory` is invoked once per `produce()` call and must return
     /// a fresh future each time.
+    ///
+    /// Use this when you already have a `tokio::runtime::Handle`
+    /// (e.g. from a long-lived runtime in your test harness). For the
+    /// common case of "I just want to drive an async producer from a
+    /// sync test", prefer [`with_new_runtime`](Self::with_new_runtime).
     pub fn new(handle: tokio::runtime::Handle, factory: F) -> Self {
-        Self { handle, factory }
+        Self {
+            handle,
+            _owned_runtime: None,
+            factory,
+        }
+    }
+
+    /// Build a new adapter that owns a fresh multi-thread `tokio::runtime::Runtime`.
+    ///
+    /// The runtime lives for the lifetime of the producer and is
+    /// dropped (along with all its workers) when the producer is
+    /// dropped. Use this when you don't already have a runtime and
+    /// just want to drive an async producer from sync code.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use dev_async::{run_with_timeout, BlockingAsyncProducer};
+    /// use dev_report::{Producer, Report};
+    /// use std::time::Duration;
+    ///
+    /// let producer = BlockingAsyncProducer::with_new_runtime(|| async {
+    ///     let check = run_with_timeout("op", Duration::from_millis(50), async {}).await;
+    ///     let mut r = Report::new("crate", "0.1.0").with_producer("dev-async");
+    ///     r.push(check);
+    ///     r.finish();
+    ///     r
+    /// })
+    /// .expect("build runtime");
+    /// let _report = producer.produce();
+    /// ```
+    pub fn with_new_runtime(factory: F) -> std::io::Result<Self> {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+        let handle = rt.handle().clone();
+        Ok(Self {
+            handle,
+            _owned_runtime: Some(rt),
+            factory,
+        })
+    }
+
+    /// Build a new adapter that owns a fresh `current_thread`
+    /// `tokio::runtime::Runtime`.
+    ///
+    /// Lighter-weight than [`with_new_runtime`](Self::with_new_runtime):
+    /// no worker threads are spawned. Suitable for tests and
+    /// single-threaded harnesses.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use dev_async::BlockingAsyncProducer;
+    /// use dev_report::{Producer, Report};
+    ///
+    /// let producer = BlockingAsyncProducer::with_current_thread_runtime(|| async {
+    ///     Report::new("c", "0.1.0").with_producer("dev-async")
+    /// })
+    /// .expect("build runtime");
+    /// let _r = producer.produce();
+    /// ```
+    pub fn with_current_thread_runtime(factory: F) -> std::io::Result<Self> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let handle = rt.handle().clone();
+        Ok(Self {
+            handle,
+            _owned_runtime: Some(rt),
+            factory,
+        })
     }
 }
 
@@ -359,5 +441,46 @@ mod tests {
         } else {
             panic!("expected numeric");
         }
+    }
+
+    #[test]
+    fn blocking_async_producer_with_new_runtime() {
+        let producer = BlockingAsyncProducer::with_new_runtime(|| async {
+            let mut r = Report::new("c", "0.1.0").with_producer("dev-async");
+            r.push(dev_report::CheckResult::pass("x"));
+            r.finish();
+            r
+        })
+        .expect("build runtime");
+        let report = producer.produce();
+        assert_eq!(report.checks.len(), 1);
+        assert_eq!(report.overall_verdict(), Verdict::Pass);
+    }
+
+    #[test]
+    fn blocking_async_producer_with_current_thread_runtime() {
+        let producer = BlockingAsyncProducer::with_current_thread_runtime(|| async {
+            let mut r = Report::new("c", "0.1.0").with_producer("dev-async");
+            r.push(dev_report::CheckResult::pass("y"));
+            r.finish();
+            r
+        })
+        .expect("build runtime");
+        let report = producer.produce();
+        assert_eq!(report.checks.len(), 1);
+    }
+
+    #[test]
+    fn blocking_async_producer_can_drive_run_with_timeout() {
+        let producer = BlockingAsyncProducer::with_current_thread_runtime(|| async {
+            let check = run_with_timeout("op", Duration::from_millis(50), async {}).await;
+            let mut r = Report::new("c", "0.1.0").with_producer("dev-async");
+            r.push(check);
+            r.finish();
+            r
+        })
+        .expect("build runtime");
+        let report = producer.produce();
+        assert!(matches!(report.overall_verdict(), Verdict::Pass));
     }
 }
