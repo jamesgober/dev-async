@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-05-10
+
+### Added
+
+- New `cancellation_safety` module — `check_cancel_safe(name, cancel_at, fut, assert_safe)` drives a future to a deadline, drops it, and runs the caller's assertion to verify observable state remains consistent. Verdicts: `Pass` + `cancellation_safe`, `Fail (Critical)` + `cancellation_unsafe` + `regression`, or `Skip` if the future completed before cancellation.
+- `BlockingAsyncProducer::with_runtime_builder(configure, factory)` — owned-runtime constructor that lets the caller customize the `tokio::runtime::Builder` (worker thread count, thread names, stack size, etc.) before the runtime is built.
+
+[0.9.2]: https://github.com/jamesgober/dev-async/releases/tag/v0.9.2
+
 ## [0.9.1] - 2026-05-09
 
 ### Added
@@ -79,5 +88,5 @@
 Name-claim release. Deadlock detection, task tracking, and shutdown
 verification land in `0.2.x` and beyond.
 
-[Unreleased]: https://github.com/jamesgober/dev-async/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/jamesgober/dev-async/compare/v0.9.2...HEAD
 [0.1.0]: https://github.com/jamesgober/dev-async/releases/tag/v0.1.0

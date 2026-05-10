@@ -33,6 +33,8 @@
 //! - [`deadlock`] — `try_lock_with_timeout` helpers.
 //! - [`tasks`] — `TrackedTaskGroup` for leak detection.
 //! - [`shutdown`] — `ShutdownProbe` for graceful-shutdown verification.
+//! - [`cancellation_safety`] — `check_cancel_safe` for verifying that
+//!   futures dropped mid-poll leave observable state consistent.
 //! - `blocking` (feature `block-detect`) — heuristic blocking-call
 //!   detection inside async tasks (visible in rustdoc when the
 //!   feature is enabled).
@@ -46,6 +48,7 @@ use std::time::{Duration, Instant};
 
 use dev_report::{CheckResult, Evidence, Producer, Report, Severity};
 
+pub mod cancellation_safety;
 pub mod deadlock;
 pub mod shutdown;
 pub mod tasks;
@@ -357,6 +360,46 @@ where
             factory,
         })
     }
+
+    /// Build a new adapter with a runtime configured by the caller.
+    ///
+    /// `configure` receives a `tokio::runtime::Builder` that the
+    /// caller can customize (worker thread count, thread name,
+    /// stack size, IO/time enablement, etc.) before it is built.
+    /// The resulting runtime is owned by the producer.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use dev_async::BlockingAsyncProducer;
+    /// use dev_report::{Producer, Report};
+    ///
+    /// let producer = BlockingAsyncProducer::with_runtime_builder(
+    ///     |b| {
+    ///         b.worker_threads(2);
+    ///         b.thread_name("my-async-test");
+    ///         b.enable_all();
+    ///         b
+    ///     },
+    ///     || async { Report::new("c", "0.1.0").with_producer("dev-async") },
+    /// )
+    /// .expect("build runtime");
+    /// let _r = producer.produce();
+    /// ```
+    pub fn with_runtime_builder<C>(configure: C, factory: F) -> std::io::Result<Self>
+    where
+        C: FnOnce(&mut tokio::runtime::Builder) -> &mut tokio::runtime::Builder,
+    {
+        let mut builder = tokio::runtime::Builder::new_multi_thread();
+        configure(&mut builder);
+        let rt = builder.build()?;
+        let handle = rt.handle().clone();
+        Ok(Self {
+            handle,
+            _owned_runtime: Some(rt),
+            factory,
+        })
+    }
 }
 
 impl<F, Fut> Producer for BlockingAsyncProducer<F, Fut>
@@ -482,5 +525,25 @@ mod tests {
         .expect("build runtime");
         let report = producer.produce();
         assert!(matches!(report.overall_verdict(), Verdict::Pass));
+    }
+
+    #[test]
+    fn blocking_async_producer_with_runtime_builder() {
+        let producer = BlockingAsyncProducer::with_runtime_builder(
+            |b| {
+                b.worker_threads(1);
+                b.enable_all();
+                b
+            },
+            || async {
+                let mut r = Report::new("c", "0.1.0").with_producer("dev-async");
+                r.push(dev_report::CheckResult::pass("custom-rt"));
+                r.finish();
+                r
+            },
+        )
+        .expect("build runtime");
+        let report = producer.produce();
+        assert_eq!(report.checks.len(), 1);
     }
 }
