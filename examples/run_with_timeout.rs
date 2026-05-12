@@ -16,26 +16,18 @@ use dev_async::run_with_timeout;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    let fast = run_with_timeout(
-        "fast_op",
-        Duration::from_millis(500),
-        async {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        },
-    )
+    let fast = run_with_timeout("fast_op", Duration::from_millis(500), async {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    })
     .await;
     println!(
         "fast:    {:?}  tags={:?}  duration={:?}ms",
         fast.verdict, fast.tags, fast.duration_ms
     );
 
-    let hung = run_with_timeout(
-        "hung_op",
-        Duration::from_millis(50),
-        async {
-            tokio::time::sleep(Duration::from_secs(60)).await;
-        },
-    )
+    let hung = run_with_timeout("hung_op", Duration::from_millis(50), async {
+        tokio::time::sleep(Duration::from_secs(60)).await;
+    })
     .await;
     println!(
         "hung:    {:?}  tags={:?}  severity={:?}",

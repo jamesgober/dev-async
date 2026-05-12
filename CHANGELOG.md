@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-05-12
+
 ### Added
 
 - `examples/run_with_timeout.rs` — runnable demonstration of `run_with_timeout` against two futures (one fast, one hung), showing the `Pass` and `Fail` verdicts plus the `timeout` tag on the hung case.
@@ -9,6 +11,8 @@
 ### Changed
 
 - CI: `actions/checkout` bumped from `v4` to `v5` (removes Node 20 deprecation warnings).
+
+[0.9.3]: https://github.com/jamesgober/dev-async/releases/tag/v0.9.3
 
 ## [0.9.2] - 2026-05-10
 
@@ -96,5 +100,5 @@
 Name-claim release. Deadlock detection, task tracking, and shutdown
 verification land in `0.2.x` and beyond.
 
-[Unreleased]: https://github.com/jamesgober/dev-async/compare/v0.9.2...HEAD
+[Unreleased]: https://github.com/jamesgober/dev-async/compare/v0.9.3...HEAD
 [0.1.0]: https://github.com/jamesgober/dev-async/releases/tag/v0.1.0
