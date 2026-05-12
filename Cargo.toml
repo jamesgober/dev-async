@@ -1,6 +1,6 @@
 [package]
 name = "dev-async"
-version = "0.9.3"
+version = "0.9.4"
 edition = "2021"
 rust-version = "1.85"
 readme = "README.md"
@@ -10,14 +10,14 @@ authors = [
     "James Gober <me@jamesgober.com>"
 ]
 
-description = "Async-specific validation for Rust. Deadlocks, task leaks, hung futures, graceful shutdown. Part of the dev-* verification suite."
+description = "Async runtime verification for Rust: timeouts, deadlock detection, task tracking, hung-shutdown probes. The async failure modes that synchronous tests miss. Part of the dev-* verification collection."
 
 keywords = [
     "async",
     "tokio",
     "deadlock",
-    "verification",
-    "ai-tools"
+    "timeout",
+    "shutdown"
 ]
 
 categories = [

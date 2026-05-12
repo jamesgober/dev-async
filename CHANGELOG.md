@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-05-12
+
+Documentation and SEO pass. No code changes.
+
+### Changed
+
+- README header standardized to match the collection-wide template: Rust logo image, MSRV badge between CI and docs.rs, copyright block at bottom.
+- Subtitle now reads `ASYNC RUNTIME VERIFICATION FOR RUST` (was `ASYNC-SPECIFIC VALIDATION FOR RUST`). Specific to what the crate actually verifies; search-tighter.
+- Tagline rewritten to lead with what the crate detects (timeouts, deadlocks, task tracking, hung shutdown) instead of the part-of-suite framing.
+- `## What it does` rewritten so the consumer story is CI/release-pipeline-first; AI assistants demoted to one of several consumers.
+- `## The dev-* suite` block added with the full 14-crate map.
+- `Cargo.toml` description rewritten: leads with the failure modes detected.
+- `Cargo.toml` keywords retuned: dropped `verification` and `ai-tools`, added `timeout` and `shutdown` for crates.io search.
+
+### Added
+
+- "Part of the `dev-*` verification collection" block on the README, under the intro, linking the umbrella `dev-tools` crate.
+
+[0.9.4]: https://github.com/jamesgober/dev-async/releases/tag/v0.9.4
+
 ## [0.9.3] - 2026-05-12
 
 ### Added
