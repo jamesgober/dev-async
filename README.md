@@ -35,7 +35,7 @@ on it without parsing logs.
 
 ```toml
 [dependencies]
-dev-async = "0.9.2"
+dev-async = "0.9.3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -43,7 +43,7 @@ Opt-in features:
 
 ```toml
 [dependencies]
-dev-async = { version = "0.9.2", features = ["block-detect"] }
+dev-async = { version = "0.9.3", features = ["block-detect"] }
 ```
 
 ```rust
