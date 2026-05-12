@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- `examples/run_with_timeout.rs` — runnable demonstration of `run_with_timeout` against two futures (one fast, one hung), showing the `Pass` and `Fail` verdicts plus the `timeout` tag on the hung case.
+
+### Changed
+
+- CI: `actions/checkout` bumped from `v4` to `v5` (removes Node 20 deprecation warnings).
+
 ## [0.9.2] - 2026-05-10
 
 ### Added
