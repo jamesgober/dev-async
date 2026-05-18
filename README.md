@@ -9,7 +9,7 @@
     <a href="https://crates.io/crates/dev-async"><img alt="crates.io" src="https://img.shields.io/crates/v/dev-async.svg"></a>
     <a href="https://crates.io/crates/dev-async"><img alt="downloads" src="https://img.shields.io/crates/d/dev-async.svg"></a>
     <a href="https://github.com/jamesgober/dev-async/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/jamesgober/dev-async/actions/workflows/ci.yml/badge.svg"></a>
-    <img alt="MSRV" src="https://img.shields.io/badge/MSRV-1.85%2B-blue.svg?style=flat-square" title="Rust Version">
+    <img alt="MSRV" src="https://img.shields.io/badge/MSRV-1.75%2B-blue.svg?style=flat-square" title="Rust Version">
     <a href="https://docs.rs/dev-async"><img alt="docs.rs" src="https://docs.rs/dev-async/badge.svg"></a>
 </p>
 
@@ -45,7 +45,7 @@ and AI assistants can act on it without scraping logs.
 
 ```toml
 [dependencies]
-dev-async = "0.9.4"
+dev-async = "0.9.5"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
