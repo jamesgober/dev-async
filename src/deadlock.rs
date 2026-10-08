@@ -55,6 +55,9 @@ use tokio::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 /// };
 /// # }
 /// ```
+// `CheckResult` is the crate's public error value; boxing it would change the
+// signature of this public function, so the large `Err` variant is kept.
+#[allow(clippy::result_large_err)]
 pub async fn try_mutex_lock_with_timeout<'a, T>(
     name: impl Into<String>,
     lock: &'a Arc<Mutex<T>>,
@@ -90,6 +93,9 @@ pub async fn try_mutex_lock_with_timeout<'a, T>(
 }
 
 /// Acquire a `tokio::sync::RwLock` read lock or fail.
+// `CheckResult` is the crate's public error value; boxing it would change the
+// signature of this public function, so the large `Err` variant is kept.
+#[allow(clippy::result_large_err)]
 pub async fn try_rwlock_read_with_timeout<'a, T>(
     name: impl Into<String>,
     lock: &'a Arc<RwLock<T>>,
@@ -125,6 +131,9 @@ pub async fn try_rwlock_read_with_timeout<'a, T>(
 }
 
 /// Acquire a `tokio::sync::RwLock` write lock or fail.
+// `CheckResult` is the crate's public error value; boxing it would change the
+// signature of this public function, so the large `Err` variant is kept.
+#[allow(clippy::result_large_err)]
 pub async fn try_rwlock_write_with_timeout<'a, T>(
     name: impl Into<String>,
     lock: &'a Arc<RwLock<T>>,
