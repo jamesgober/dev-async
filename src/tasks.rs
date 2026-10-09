@@ -1,8 +1,12 @@
 //! Task tracking for leak detection.
 //!
 //! [`TrackedTaskGroup`] records every task spawned through it and
-//! reports any tasks that were still running when the group is
-//! dropped or finalized.
+//! reports any tasks that are still running when the group is
+//! finalized.
+//!
+//! Dropping a group without calling
+//! [`finalize`](TrackedTaskGroup::finalize) reports nothing; the tasks
+//! keep running detached, as with any dropped `JoinHandle`.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -14,8 +18,8 @@ use tokio::task::JoinHandle;
 /// A group of spawned tasks whose lifecycle is tracked.
 ///
 /// When [`finalize`](TrackedTaskGroup::finalize) is called, the group
-/// joins each handle with the configured grace period and reports any
-/// tasks still running as leaks.
+/// joins every handle within the grace period and reports any tasks
+/// still running as leaks.
 ///
 /// # Example
 ///
@@ -52,6 +56,10 @@ impl TrackedTaskGroup {
     ///
     /// The future MUST resolve to `()`. If you need a result, capture
     /// it via shared state (e.g. `tokio::sync::oneshot::Sender`).
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside a tokio runtime, like `tokio::spawn`.
     pub fn spawn<F>(&mut self, fut: F)
     where
         F: std::future::Future<Output = ()> + Send + 'static,
@@ -65,8 +73,14 @@ impl TrackedTaskGroup {
         self.spawned.load(Ordering::Relaxed)
     }
 
-    /// Join all tracked tasks with a per-task grace period and emit a
+    /// Join all tracked tasks within a grace period and emit a
     /// [`CheckResult`].
+    ///
+    /// Every task gets the same grace period, measured from the call.
+    /// The tasks are joined concurrently, so `finalize` returns within
+    /// about `grace` no matter how many tasks leak. Tasks still running
+    /// when the grace period ends are aborted, so a leaked task does not
+    /// keep running after the check.
     ///
     /// Verdicts:
     /// - All tasks completed cleanly -> `Pass`.
@@ -81,11 +95,11 @@ impl TrackedTaskGroup {
         let mut panicked = 0usize;
         let mut leaked = 0usize;
 
-        for h in self.handles {
-            match tokio::time::timeout(grace, h).await {
-                Ok(Ok(())) => completed += 1,
-                Ok(Err(_join_err)) => panicked += 1,
-                Err(_) => leaked += 1,
+        for outcome in crate::join_with_deadline(self.handles, grace).await {
+            match outcome {
+                crate::JoinOutcome::Finished(_) => completed += 1,
+                crate::JoinOutcome::Failed(_) => panicked += 1,
+                crate::JoinOutcome::TimedOut => leaked += 1,
             }
         }
 
@@ -181,6 +195,60 @@ mod tests {
         assert_eq!(c.verdict, Verdict::Fail);
         assert_eq!(c.severity, Some(Severity::Error));
         assert!(c.has_tag("task_leak"));
+    }
+
+    #[tokio::test]
+    async fn many_leaks_finalize_within_one_grace_period() {
+        // Each leaked handle used to get its own grace period in turn,
+        // so 10 leaks with a 200ms grace took about 2s.
+        let mut g = TrackedTaskGroup::new("many");
+        for _ in 0..10 {
+            g.spawn(async {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+            });
+        }
+        let started = std::time::Instant::now();
+        let c = g.finalize(Duration::from_millis(200)).await;
+        let elapsed = started.elapsed();
+        assert!(c.has_tag("task_leak"));
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "finalize took {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn leaked_tasks_are_aborted() {
+        let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = finished.clone();
+        let mut g = TrackedTaskGroup::new("abort");
+        g.spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            flag.store(true, Ordering::SeqCst);
+        });
+        let c = g.finalize(Duration::from_millis(10)).await;
+        assert!(c.has_tag("task_leak"));
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert!(!finished.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn counts_mixed_outcomes() {
+        let mut g = TrackedTaskGroup::new("mixed");
+        g.spawn(async {});
+        g.spawn(async {
+            panic!("boom");
+        });
+        g.spawn(async {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+        let c = g.finalize(Duration::from_millis(50)).await;
+        // A panic outranks a leak.
+        assert_eq!(c.severity, Some(Severity::Critical));
+        assert_eq!(
+            c.detail.as_deref(),
+            Some("spawned=3 completed=1 panicked=1 leaked=1")
+        );
     }
 
     #[tokio::test]

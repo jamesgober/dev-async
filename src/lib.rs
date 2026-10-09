@@ -30,7 +30,8 @@
 //!
 //! ## Modules
 //!
-//! - [`deadlock`] — `try_lock_with_timeout` helpers.
+//! - [`deadlock`] — `try_mutex_lock_with_timeout`,
+//!   `try_rwlock_read_with_timeout` and `try_rwlock_write_with_timeout`.
 //! - [`tasks`] — `TrackedTaskGroup` for leak detection.
 //! - [`shutdown`] — `ShutdownProbe` for graceful-shutdown verification.
 //! - [`cancellation_safety`] — `check_cancel_safe` for verifying that
@@ -42,6 +43,18 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![warn(missing_docs)]
 #![warn(rust_2018_idioms)]
+
+/// Version of this crate as compiled, taken from its `Cargo.toml`.
+///
+/// Lets tools that bundle this crate, such as the `dev` CLI in
+/// `dev-tools`, report the version that is actually linked.
+///
+/// # Example
+///
+/// ```
+/// assert!(!dev_async::VERSION.is_empty());
+/// ```
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 use std::future::Future;
 use std::time::{Duration, Instant};
@@ -120,31 +133,36 @@ where
 /// Verify that all spawned tasks finish within the given timeout.
 ///
 /// Pass a vector of `JoinHandle`s. Returns one [`CheckResult`] per task,
-/// each tagged `async` with numeric `Evidence` for the index and
-/// timeout / elapsed.
+/// in the same order as `handles`, each tagged `async` with numeric
+/// `Evidence` for the index and timeout / elapsed.
+///
+/// All tasks share one deadline, `timeout` after the call starts, and
+/// are joined concurrently, so the call returns within about `timeout`
+/// no matter how many tasks hang. `elapsed_ms` is the time from the
+/// call until that task was seen to finish.
 ///
 /// Verdicts:
 /// - Task completed -> `Pass`, with `elapsed_ms` evidence.
 /// - Task panicked or was cancelled -> `Fail (Critical)`, with
 ///   `task_panicked` tag.
 /// - Task did not finish in time -> `Fail (Error)`, with `timeout` tag.
+///   The task is aborted so it does not keep running after the check.
 pub async fn join_all_with_timeout<T>(
     name: impl Into<String>,
     timeout: Duration,
     handles: Vec<tokio::task::JoinHandle<T>>,
 ) -> Vec<CheckResult> {
     let name = name.into();
-    let mut results = Vec::with_capacity(handles.len());
-    for (i, h) in handles.into_iter().enumerate() {
+    let outcomes = join_with_deadline(handles, timeout).await;
+    let mut results = Vec::with_capacity(outcomes.len());
+    for (i, outcome) in outcomes.into_iter().enumerate() {
         let task_name = format!("async::{name}::task{i}");
-        let started = Instant::now();
         let evidence_base = vec![
             Evidence::numeric("task_index", i as f64),
             Evidence::numeric("timeout_ms", timeout.as_millis() as f64),
         ];
-        let result = match tokio::time::timeout(timeout, h).await {
-            Ok(Ok(_)) => {
-                let elapsed = started.elapsed();
+        let result = match outcome {
+            JoinOutcome::Finished(elapsed) => {
                 let mut c =
                     CheckResult::pass(task_name).with_duration_ms(elapsed.as_millis() as u64);
                 c.tags = vec!["async".to_string()];
@@ -155,7 +173,7 @@ pub async fn join_all_with_timeout<T>(
                 };
                 c
             }
-            Ok(Err(join_err)) => {
+            JoinOutcome::Failed(join_err) => {
                 let mut c = CheckResult::fail(task_name, Severity::Critical)
                     .with_detail(format!("task panicked or was cancelled: {join_err}"));
                 c.tags = vec![
@@ -166,7 +184,7 @@ pub async fn join_all_with_timeout<T>(
                 c.evidence = evidence_base;
                 c
             }
-            Err(_) => {
+            JoinOutcome::TimedOut => {
                 let mut c = CheckResult::fail(task_name, Severity::Error)
                     .with_detail(format!("task did not complete within {timeout:?}"));
                 c.tags = vec![
@@ -181,6 +199,76 @@ pub async fn join_all_with_timeout<T>(
         results.push(result);
     }
     results
+}
+
+/// How one task ended when joined by [`join_with_deadline`].
+pub(crate) enum JoinOutcome {
+    /// Finished normally; time from the start of the join until it was
+    /// seen to finish.
+    Finished(Duration),
+    /// Panicked or was cancelled.
+    Failed(tokio::task::JoinError),
+    /// Still running at the deadline. The task has been aborted.
+    TimedOut,
+}
+
+/// Join every handle concurrently against one shared deadline,
+/// `timeout` from now. Tasks still running at the deadline are aborted
+/// so they do not outlive the check. Outcomes are returned in the order
+/// of `handles`.
+pub(crate) async fn join_with_deadline<T>(
+    handles: Vec<tokio::task::JoinHandle<T>>,
+    timeout: Duration,
+) -> Vec<JoinOutcome> {
+    let started = Instant::now();
+    // `None` when `timeout` is too large to represent: wait without a deadline.
+    let deadline = tokio::time::Instant::now().checked_add(timeout);
+    let mut pending: Vec<Option<tokio::task::JoinHandle<T>>> =
+        handles.into_iter().map(Some).collect();
+    let mut outcomes: Vec<Option<JoinOutcome>> = pending.iter().map(|_| None).collect();
+    {
+        let all_done = std::future::poll_fn(|cx| {
+            let mut still_running = false;
+            for (slot, outcome) in pending.iter_mut().zip(outcomes.iter_mut()) {
+                if let Some(handle) = slot {
+                    match std::pin::Pin::new(handle).poll(cx) {
+                        std::task::Poll::Ready(res) => {
+                            *outcome = Some(match res {
+                                Ok(_) => JoinOutcome::Finished(started.elapsed()),
+                                Err(e) => JoinOutcome::Failed(e),
+                            });
+                            *slot = None;
+                        }
+                        std::task::Poll::Pending => still_running = true,
+                    }
+                }
+            }
+            if still_running {
+                std::task::Poll::Pending
+            } else {
+                std::task::Poll::Ready(())
+            }
+        });
+        match deadline {
+            Some(at) => {
+                let _ = tokio::time::timeout_at(at, all_done).await;
+            }
+            None => all_done.await,
+        }
+    }
+    pending
+        .into_iter()
+        .zip(outcomes)
+        .map(|(slot, outcome)| match outcome {
+            Some(o) => o,
+            None => {
+                if let Some(handle) = slot {
+                    handle.abort();
+                }
+                JoinOutcome::TimedOut
+            }
+        })
+        .collect()
 }
 
 /// A trait for any async harness that produces a verdict via a future.
@@ -227,13 +315,21 @@ pub trait AsyncProducer {
 }
 
 /// Adapter that wraps an `async fn` returning a [`Report`] and
-/// implements `dev_report::Producer` by calling
-/// `tokio::runtime::Handle::current().block_on(...)`.
+/// implements `dev_report::Producer` by blocking on it.
 ///
-/// MUST be invoked from a sync context that *is not* itself running
-/// inside a `current_thread` runtime. Calling `block_on` from inside
-/// an async runtime would deadlock; if you need that, use
-/// [`AsyncProducer`] directly without going through `Producer`.
+/// When the adapter owns its runtime (built with
+/// [`with_new_runtime`](Self::with_new_runtime),
+/// [`with_current_thread_runtime`](Self::with_current_thread_runtime) or
+/// [`with_runtime_builder`](Self::with_runtime_builder)), `produce` drives
+/// the future with that runtime's `block_on`, so timers and IO work on
+/// both runtime flavors. When it borrows a handle via [`new`](Self::new),
+/// `produce` calls `Handle::block_on`; see that constructor for the
+/// `current_thread` caveat.
+///
+/// MUST be invoked from a sync context. Calling `produce` from inside
+/// an async runtime panics (tokio refuses to block a runtime thread);
+/// in async code, use [`AsyncProducer`] directly without going through
+/// `Producer`.
 ///
 /// # Example
 ///
@@ -286,6 +382,13 @@ where
     /// (e.g. from a long-lived runtime in your test harness). For the
     /// common case of "I just want to drive an async producer from a
     /// sync test", prefer [`with_new_runtime`](Self::with_new_runtime).
+    ///
+    /// `produce` uses `Handle::block_on`. On a `current_thread` runtime
+    /// that call cannot drive the timer or IO drivers, so a future that
+    /// sleeps or times out (including [`run_with_timeout`]) never wakes
+    /// unless another thread is inside that runtime's `Runtime::block_on`
+    /// at the same time. Pass a handle to a multi-thread runtime, or use
+    /// one of the owning constructors, which do not have this limit.
     pub fn new(handle: tokio::runtime::Handle, factory: F) -> Self {
         Self {
             handle,
@@ -368,6 +471,11 @@ where
     /// stack size, IO/time enablement, etc.) before it is built.
     /// The resulting runtime is owned by the producer.
     ///
+    /// The builder starts with timers and IO disabled, as tokio's
+    /// builders do. Call `enable_all()` (or at least `enable_time()`)
+    /// if the produced future uses [`run_with_timeout`] or any other
+    /// timer; otherwise tokio panics when the timer is created.
+    ///
     /// # Example
     ///
     /// ```no_run
@@ -409,7 +517,13 @@ where
 {
     fn produce(&self) -> Report {
         let fut = (self.factory)();
-        self.handle.block_on(fut)
+        // An owned runtime is driven with `Runtime::block_on`: unlike
+        // `Handle::block_on`, it also drives the timer and IO drivers of
+        // a `current_thread` runtime, so sleeps and timeouts complete.
+        match &self._owned_runtime {
+            Some(rt) => rt.block_on(fut),
+            None => self.handle.block_on(fut),
+        }
     }
 }
 
@@ -471,6 +585,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn join_all_shares_one_deadline_across_hung_tasks() {
+        // Ten hung tasks with a 200ms timeout used to take 10 x 200ms
+        // because each handle got its own timeout in turn.
+        let handles: Vec<_> = (0..10)
+            .map(|_| {
+                tokio::spawn(async {
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                })
+            })
+            .collect();
+        let started = Instant::now();
+        let results = join_all_with_timeout("g", Duration::from_millis(200), handles).await;
+        let elapsed = started.elapsed();
+        assert_eq!(results.len(), 10);
+        assert!(results.iter().all(|r| r.has_tag("timeout")));
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "join took {elapsed:?}, expected about one timeout"
+        );
+    }
+
+    #[tokio::test]
+    async fn join_all_fails_task_that_finishes_after_the_shared_deadline() {
+        // Task 0 finishes at ~40ms, task 1 at ~120ms. With a 80ms
+        // timeout, task 1 is late even though it finishes within 80ms
+        // of task 0.
+        let h0 = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+        });
+        let h1 = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_millis(400)).await;
+        });
+        let results = join_all_with_timeout("g", Duration::from_millis(80), vec![h0, h1]).await;
+        assert_eq!(results[0].verdict, Verdict::Pass);
+        assert_eq!(results[1].verdict, Verdict::Fail);
+        assert!(results[1].has_tag("timeout"));
+    }
+
+    #[tokio::test]
+    async fn join_all_aborts_timed_out_tasks() {
+        let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = finished.clone();
+        let h = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        let results = join_all_with_timeout("g", Duration::from_millis(10), vec![h]).await;
+        assert!(results[0].has_tag("timeout"));
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert!(
+            !finished.load(std::sync::atomic::Ordering::SeqCst),
+            "timed-out task kept running after the check"
+        );
+    }
+
+    #[tokio::test]
+    async fn join_all_reports_results_in_handle_order() {
+        let slow = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        });
+        let panics = tokio::spawn(async { panic!("boom") });
+        let fast = tokio::spawn(async {});
+        let results =
+            join_all_with_timeout("g", Duration::from_secs(2), vec![slow, panics, fast]).await;
+        assert_eq!(results[0].name, "async::g::task0");
+        assert_eq!(results[0].verdict, Verdict::Pass);
+        assert!(results[1].has_tag("task_panicked"));
+        assert_eq!(results[2].verdict, Verdict::Pass);
+    }
+
+    #[tokio::test]
+    async fn join_all_with_huge_timeout_does_not_panic() {
+        let h = tokio::spawn(async {});
+        let results = join_all_with_timeout("g", Duration::MAX, vec![h]).await;
+        assert_eq!(results[0].verdict, Verdict::Pass);
+    }
+
+    #[tokio::test]
+    async fn join_all_empty_is_empty() {
+        let results = join_all_with_timeout::<()>("g", Duration::from_millis(10), Vec::new()).await;
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
     async fn check_evidence_includes_timeout() {
         let check = run_with_timeout("x", Duration::from_millis(50), async {}).await;
         let timeout_evidence = check
@@ -525,6 +723,60 @@ mod tests {
         .expect("build runtime");
         let report = producer.produce();
         assert!(matches!(report.overall_verdict(), Verdict::Pass));
+    }
+
+    /// Run `f` on a helper thread and fail if it does not return in time,
+    /// so a regression shows up as a test failure instead of a hang.
+    fn finishes_within<R: Send + 'static>(
+        limit: Duration,
+        f: impl FnOnce() -> R + Send + 'static,
+    ) -> R {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(limit)
+            .expect("producer did not finish; block_on is not driving timers")
+    }
+
+    #[test]
+    fn current_thread_producer_drives_timers() {
+        // `Handle::block_on` cannot drive a current_thread runtime's
+        // timer, so this used to hang forever.
+        let report = finishes_within(Duration::from_secs(10), || {
+            let producer = BlockingAsyncProducer::with_current_thread_runtime(|| async {
+                let check = run_with_timeout("sleepy", Duration::from_secs(5), async {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                })
+                .await;
+                let mut r = Report::new("c", "0.1.0").with_producer("dev-async");
+                r.push(check);
+                r.finish();
+                r
+            })
+            .expect("build runtime");
+            producer.produce()
+        });
+        assert_eq!(report.overall_verdict(), Verdict::Pass);
+    }
+
+    #[test]
+    fn current_thread_producer_reports_timeout() {
+        let report = finishes_within(Duration::from_secs(10), || {
+            let producer = BlockingAsyncProducer::with_current_thread_runtime(|| async {
+                let check = run_with_timeout("hung", Duration::from_millis(20), async {
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                })
+                .await;
+                let mut r = Report::new("c", "0.1.0").with_producer("dev-async");
+                r.push(check);
+                r.finish();
+                r
+            })
+            .expect("build runtime");
+            producer.produce()
+        });
+        assert_eq!(report.overall_verdict(), Verdict::Fail);
     }
 
     #[test]

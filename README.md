@@ -53,7 +53,7 @@ Opt-in features:
 
 ```toml
 [dependencies]
-dev-async = { version = "0.9.4", features = ["block-detect"] }
+dev-async = { version = "0.9.5", features = ["block-detect"] }
 ```
 
 ```rust
@@ -116,7 +116,8 @@ let mut group = TrackedTaskGroup::new("workers");
 group.spawn(async { /* work */ });
 group.spawn(async { /* work */ });
 
-// Joins all with a grace period; any unfinished task -> task_leak tag.
+// Joins all within one grace period; any unfinished task is aborted
+// and reported with the task_leak tag.
 let _check = group.finalize(Duration::from_millis(200)).await;
 # }
 ```
@@ -217,10 +218,8 @@ timeout / cancellation contract (REPS § 4-5) will not change.
 
 ## Minimum supported Rust version
 
-`1.85` — pinned in `Cargo.toml` via `rust-version` and verified by
-the MSRV job in CI. (Bumped from 1.75 to align with the suite's
-shared MSRV after sibling crates picked up dependencies that require
-`edition2024`.)
+`1.75`, pinned in `Cargo.toml` via `rust-version` and verified by the
+MSRV job in CI.
 
 ## License
 

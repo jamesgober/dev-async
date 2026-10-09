@@ -1,8 +1,11 @@
 //! Timeout-based deadlock detection helpers.
 //!
-//! `try_lock_with_timeout` wraps an async lock acquisition with a hard
-//! deadline. If the lock cannot be acquired in time, the result is
-//! [`Verdict::Fail`] with a `deadlock_suspected` tag.
+//! [`try_mutex_lock_with_timeout`], [`try_rwlock_read_with_timeout`] and
+//! [`try_rwlock_write_with_timeout`] wrap an async lock acquisition with
+//! a hard deadline. If the lock cannot be acquired in time, the result
+//! is [`Verdict::Fail`] with a `deadlock_suspected` tag. The pending
+//! acquisition is dropped on timeout; tokio's lock futures are
+//! cancel-safe, so this does not leave the caller queued on the lock.
 //!
 //! ## What this catches
 //!

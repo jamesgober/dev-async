@@ -89,6 +89,10 @@ joins them with a configurable grace period at finalize:
 - Any task panics -> `Fail (Critical)` + `task_panicked`.
 - Any task does not finish in grace -> `Fail (Error)` + `task_leak`.
 
+The grace period is shared: every task gets the same deadline, measured
+from the finalize call. Tasks still running at the deadline are aborted
+(section 5). `join_all_with_timeout` follows the same rules.
+
 ## 8. Graceful shutdown
 
 `dev_async::shutdown::ShutdownProbe` polls a set of named components
@@ -119,8 +123,9 @@ harnesses. This crate provides:
 - `AsyncCheck` trait for async producers (returns a future).
 - `AsyncProducer` trait for async harnesses building a `Report`.
 - `BlockingAsyncProducer<F, Fut>` adapter implementing
-  `dev_report::Producer` by calling
-  `tokio::runtime::Handle::current().block_on(...)` internally.
+  `dev_report::Producer` by blocking on the future: `Runtime::block_on`
+  when the adapter owns its runtime, `Handle::block_on` on a supplied
+  handle otherwise.
   MUST be invoked from a sync context.
 
 ## 11. Safety guarantees

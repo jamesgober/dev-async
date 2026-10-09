@@ -111,6 +111,13 @@ impl ShutdownProbe {
     /// Run the probe and return one [`CheckResult`] per component plus
     /// an aggregate.
     ///
+    /// Components are checked in the order they were added, against one
+    /// shared deadline measured from the start of `run`. Each predicate
+    /// is evaluated at least once, even if an earlier component used up
+    /// the deadline, and once more at the deadline itself. A predicate
+    /// future that has not resolved by the deadline counts as "not
+    /// drained", so a hung predicate cannot hang the probe.
+    ///
     /// Per-component verdicts:
     /// - Drained before deadline -> `Pass` with `elapsed_ms` evidence.
     /// - Did not drain in time -> `Fail (Error)` with `not_drained` tag.
@@ -123,6 +130,9 @@ impl ShutdownProbe {
         let deadline = self.deadline;
         let interval = self.poll_interval;
         let started = Instant::now();
+        // Deadline on tokio's clock so sleeps and the deadline agree.
+        // `None` when the deadline is too large to represent: no limit.
+        let deadline_at = tokio::time::Instant::now().checked_add(deadline);
         let mut results = Vec::with_capacity(self.components.len() + 1);
         let mut failed_any = false;
 
@@ -131,15 +141,27 @@ impl ShutdownProbe {
             let comp_started = Instant::now();
             let mut drained = false;
             loop {
-                let elapsed_total = started.elapsed();
-                if elapsed_total >= deadline {
-                    break;
-                }
-                if (comp.drain_check)().await {
+                let check = (comp.drain_check)();
+                let ok = match deadline_at {
+                    // Polled at least once even when the deadline has passed.
+                    Some(at) => tokio::time::timeout_at(at, check).await.unwrap_or(false),
+                    None => check.await,
+                };
+                if ok {
                     drained = true;
                     break;
                 }
-                tokio::time::sleep(interval).await;
+                let now = tokio::time::Instant::now();
+                match deadline_at {
+                    Some(at) if now >= at => break,
+                    Some(at) => {
+                        // Never sleep past the deadline; the loop then
+                        // makes one last check at the deadline.
+                        let wake = now.checked_add(interval).map_or(at, |t| t.min(at));
+                        tokio::time::sleep_until(wake).await;
+                    }
+                    None => tokio::time::sleep(interval).await,
+                }
             }
             let elapsed = comp_started.elapsed();
             let evidence = vec![
@@ -255,6 +277,87 @@ mod tests {
             .deadline(Duration::from_millis(200))
             .poll_interval(Duration::from_millis(5))
             .with_component(comp);
+        let results = probe.run().await;
+        assert_eq!(results[0].verdict, Verdict::Pass);
+    }
+
+    #[tokio::test]
+    async fn drained_component_after_slow_one_still_passes() {
+        // "hung" uses up the whole deadline. "done" was drained all
+        // along and used to be reported as not drained without its
+        // predicate ever being called.
+        let probe = ShutdownProbe::new("sys")
+            .deadline(Duration::from_millis(40))
+            .poll_interval(Duration::from_millis(5))
+            .with_component(ShutdownComponent::new("hung", || async { false }))
+            .with_component(ShutdownComponent::new("done", || async { true }));
+        let results = probe.run().await;
+        assert_eq!(results[0].verdict, Verdict::Fail);
+        assert_eq!(results[1].verdict, Verdict::Pass);
+        assert_eq!(results[2].verdict, Verdict::Fail); // aggregate
+    }
+
+    #[tokio::test]
+    async fn hung_predicate_does_not_hang_the_probe() {
+        let comp = ShutdownComponent::new("stuck", || async {
+            std::future::pending::<()>().await;
+            true
+        });
+        let probe = ShutdownProbe::new("sys")
+            .deadline(Duration::from_millis(50))
+            .poll_interval(Duration::from_millis(5))
+            .with_component(comp);
+        let started = Instant::now();
+        let results = tokio::time::timeout(Duration::from_secs(5), probe.run())
+            .await
+            .expect("probe hung on a predicate that never resolves");
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(results[0].verdict, Verdict::Fail);
+        assert!(results[0].has_tag("not_drained"));
+    }
+
+    #[tokio::test]
+    async fn long_poll_interval_does_not_overrun_deadline() {
+        // A 10s poll interval with a 50ms deadline used to sleep the
+        // full 10s before giving up.
+        let probe = ShutdownProbe::new("sys")
+            .deadline(Duration::from_millis(50))
+            .poll_interval(Duration::from_secs(10))
+            .with_component(ShutdownComponent::new("hung", || async { false }));
+        let started = Instant::now();
+        let results = probe.run().await;
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(results[0].verdict, Verdict::Fail);
+    }
+
+    #[tokio::test]
+    async fn checks_again_at_the_deadline() {
+        // Drains at ~30ms; the next regular poll would be at 1s, past
+        // the 60ms deadline. The final check at the deadline sees it.
+        let flag = Arc::new(AtomicBool::new(false));
+        let f2 = flag.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            f2.store(true, Ordering::SeqCst);
+        });
+        let f3 = flag.clone();
+        let probe = ShutdownProbe::new("sys")
+            .deadline(Duration::from_millis(60))
+            .poll_interval(Duration::from_secs(1))
+            .with_component(ShutdownComponent::new("late", move || {
+                let f = f3.clone();
+                async move { f.load(Ordering::SeqCst) }
+            }));
+        let results = probe.run().await;
+        assert_eq!(results[0].verdict, Verdict::Pass);
+    }
+
+    #[tokio::test]
+    async fn huge_deadline_does_not_panic() {
+        let probe = ShutdownProbe::new("sys")
+            .deadline(Duration::MAX)
+            .poll_interval(Duration::MAX)
+            .with_component(ShutdownComponent::new("a", || async { true }));
         let results = probe.run().await;
         assert_eq!(results[0].verdict, Verdict::Pass);
     }

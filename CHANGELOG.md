@@ -2,24 +2,57 @@
 
 ## [Unreleased]
 
-## [0.9.5] - 2026-05-18
+## [0.9.5] - 2026-10-09
 
-MSRV rollback to Rust 1.75. Backed off from 1.85 after `dev-fixtures`
-swapped `tempfile` → `mod-tempdir` 1.0 in its own 0.9.5 release,
-eliminating the `getrandom 0.4.2 → edition2024` chain that was the
-sole reason the dev-* collection sat at 1.85. No code changes here;
-this crate's own runtime dependencies have always been
+Timeout and shutdown fixes from a review pass, plus the MSRV rollback
+to Rust 1.75. The rollback follows `dev-fixtures` 0.9.5 swapping
+`tempfile` for `mod-tempdir` 1.0, which removed the
+`getrandom 0.4.2 -> edition2024` chain that held the dev-* collection
+at 1.85. This crate's own runtime dependencies have always been
 1.75-compatible.
+
+### Added
+
+- `VERSION` constant with the crate version as compiled, so tools that
+  bundle this crate can report what is actually linked.
+
+### Fixed
+
+- `BlockingAsyncProducer` built with `with_current_thread_runtime` hung
+  forever on any sleep or timeout, because `Handle::block_on` cannot
+  drive a `current_thread` runtime's timer. A producer that owns its
+  runtime now drives it with `Runtime::block_on`.
+- `ShutdownProbe::run` marked a component listed after a slow one as
+  not drained without ever running its check, hung forever on a drain
+  check that never resolved, and could sleep past the deadline with a
+  long poll interval. Every check now runs at least once, is bounded by
+  the deadline, and gets a final check at the deadline. Very large
+  deadlines no longer panic.
 
 ### Changed
 
-- `rust-version` lowered from `1.85` to `1.75` in `Cargo.toml`.
-- MSRV badge in README updated from `1.85+` to `1.75+`.
+- `join_all_with_timeout` and `TrackedTaskGroup::finalize` gave each
+  task its own timeout in turn, so N hung tasks took N times the
+  timeout, and timed-out tasks kept running in the background. All
+  tasks are now joined at once against one shared deadline, the call
+  returns within about one timeout, and tasks still running at the
+  deadline are aborted (REPS section 5).
+- `rust-version` lowered from `1.85` to `1.75`. CI's MSRV job now
+  builds on 1.75 against an MSRV-compatible lockfile; it was still
+  pinned to 1.85.
+- `clippy::result_large_err` is allowed on the three public
+  lock-timeout helpers. Boxing the error would change their signatures.
 
-### Notes
+### Documentation
 
-- No code change. No API change. No new dependencies.
-- Library, examples, and tests all build clean on Rust 1.75 (verified).
+- The module list and `deadlock` docs named `try_lock_with_timeout`,
+  which does not exist; they now list the real helpers.
+- `TrackedTaskGroup` docs no longer claim that dropping the group
+  reports leaks.
+- `BlockingAsyncProducer` docs say calling it inside a runtime panics
+  (not deadlocks), and note the `current_thread` limit of `new()` and
+  the `enable_all()` requirement of `with_runtime_builder`.
+- README: feature snippet version, MSRV section and badge say 1.75.
 
 [0.9.5]: https://github.com/jamesgober/dev-async/releases/tag/v0.9.5
 
