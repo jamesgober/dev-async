@@ -606,7 +606,9 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    // Paused clock so the 40ms task always finishes before the 80ms
+    // deadline fires, however loaded the machine is.
+    #[tokio::test(start_paused = true)]
     async fn join_all_fails_task_that_finishes_after_the_shared_deadline() {
         // Task 0 finishes at ~40ms, task 1 at ~120ms. With a 80ms
         // timeout, task 1 is late even though it finishes within 80ms

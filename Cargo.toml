@@ -40,6 +40,8 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "m
 pin-project-lite = { version = "0.2", optional = true }
 
 [dev-dependencies]
+# `test-util` gives tests a paused, deterministic clock.
+tokio = { version = "1", features = ["test-util"] }
 
 [features]
 default = []

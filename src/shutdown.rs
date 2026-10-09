@@ -330,9 +330,12 @@ mod tests {
         assert_eq!(results[0].verdict, Verdict::Fail);
     }
 
-    #[tokio::test]
+    // Paused clock: timers fire strictly in deadline order, so the drain
+    // at 30ms always lands before the deadline check at 60ms, even on a
+    // loaded CI runner.
+    #[tokio::test(start_paused = true)]
     async fn checks_again_at_the_deadline() {
-        // Drains at ~30ms; the next regular poll would be at 1s, past
+        // Drains at 30ms; the next regular poll would be at 1s, past
         // the 60ms deadline. The final check at the deadline sees it.
         let flag = Arc::new(AtomicBool::new(false));
         let f2 = flag.clone();
