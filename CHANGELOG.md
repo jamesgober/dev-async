@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## [0.9.6] - 2026-11-12
+
+### Fixed
+
+- `run_with_timeout` passed a future that blocked inside `poll` far
+  past its timeout. `tokio::time::timeout` polls the future before its
+  timer, so a future that blocks and then returns `Ready` counted as on
+  time. A future that finishes after its timeout now fails
+  (`Severity::Error`, tags `timeout` and `late`).
+  `join_all_with_timeout` does the same for a task seen to finish only
+  after the deadline.
+
+### Changed
+
+- Depends on `dev-report` 0.9.9 from crates.io instead of a sibling
+  checkout.
+
+[0.9.6]: https://github.com/jamesgober/dev-async/releases/tag/v0.9.6
+
 ## [0.9.5] - 2026-10-09
 
 Timeout and shutdown fixes from a review pass, plus the MSRV rollback

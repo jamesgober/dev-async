@@ -45,7 +45,7 @@ and AI assistants can act on it without scraping logs.
 
 ```toml
 [dependencies]
-dev-async = "0.9.5"
+dev-async = "0.9.6"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -53,7 +53,7 @@ Opt-in features:
 
 ```toml
 [dependencies]
-dev-async = { version = "0.9.5", features = ["block-detect"] }
+dev-async = { version = "0.9.6", features = ["block-detect"] }
 ```
 
 ```rust
@@ -85,6 +85,11 @@ async fn main() {
 The returned `CheckResult` carries the `async` tag, plus
 `timeout`/`task_panicked`/`regression` tags on failure paths, plus
 numeric `Evidence` for `timeout_ms` and (on Pass) `elapsed_ms`.
+
+A future that blocks inside `poll` (for example `std::thread::sleep`)
+cannot be interrupted, because the timer only fires once the future
+yields. If it returns after its timeout, the check still fails, tagged
+`late`.
 
 ## Deadlock detection
 

@@ -1,6 +1,6 @@
 [package]
 name = "dev-async"
-version = "0.9.5"
+version = "0.9.6"
 edition = "2021"
 rust-version = "1.75"
 readme = "README.md"
@@ -35,7 +35,7 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
-dev-report = { version = "0.9", path = "../dev-report" }
+dev-report = "0.9.9"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
 pin-project-lite = { version = "0.2", optional = true }
 

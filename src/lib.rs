@@ -80,6 +80,12 @@ pub mod blocking;
 /// severity `Error`. The future itself is dropped (cancelled) when the
 /// timeout expires.
 ///
+/// A future that blocks inside `poll` (a `std::thread::sleep`, a
+/// blocking lock or blocking I/O) cannot be interrupted: the timer only
+/// gets a chance to fire once the future yields. When such a future
+/// returns after the timeout has passed, the verdict is still `Fail`
+/// (severity `Error`, tags `timeout` and `late`), not `Pass`.
+///
 /// The returned `CheckResult` carries numeric `Evidence` for
 /// `timeout_ms` and (on the pass path) `elapsed_ms`.
 ///
@@ -107,6 +113,9 @@ where
     match tokio::time::timeout(timeout, fut).await {
         Ok(_value) => {
             let elapsed = started.elapsed();
+            if elapsed > timeout {
+                return late_failure(format!("async::{name}"), "future", elapsed, timeout);
+            }
             let mut c = CheckResult::pass(format!("async::{name}"))
                 .with_duration_ms(elapsed.as_millis() as u64);
             c.tags = vec!["async".to_string()];
@@ -147,6 +156,9 @@ where
 ///   `task_panicked` tag.
 /// - Task did not finish in time -> `Fail (Error)`, with `timeout` tag.
 ///   The task is aborted so it does not keep running after the check.
+/// - Task was seen to finish only after the deadline (it, or another
+///   task, blocked the runtime so the deadline could not fire on time)
+///   -> `Fail (Error)`, with `timeout` and `late` tags.
 pub async fn join_all_with_timeout<T>(
     name: impl Into<String>,
     timeout: Duration,
@@ -162,6 +174,12 @@ pub async fn join_all_with_timeout<T>(
             Evidence::numeric("timeout_ms", timeout.as_millis() as f64),
         ];
         let result = match outcome {
+            JoinOutcome::Finished(elapsed) if elapsed > timeout => {
+                let mut c = late_failure(task_name, "task", elapsed, timeout);
+                c.evidence
+                    .insert(0, Evidence::numeric("task_index", i as f64));
+                c
+            }
             JoinOutcome::Finished(elapsed) => {
                 let mut c =
                     CheckResult::pass(task_name).with_duration_ms(elapsed.as_millis() as u64);
@@ -199,6 +217,27 @@ pub async fn join_all_with_timeout<T>(
         results.push(result);
     }
     results
+}
+
+/// The failing check for work that finished, but only after its timeout.
+fn late_failure(name: String, what: &str, elapsed: Duration, timeout: Duration) -> CheckResult {
+    let mut c = CheckResult::fail(name, Severity::Error)
+        .with_detail(format!(
+            "{what} finished after {elapsed:?}, past its {timeout:?} timeout; \
+             it blocked without yielding, so the timeout could not interrupt it"
+        ))
+        .with_duration_ms(elapsed.as_millis() as u64);
+    c.tags = vec![
+        "async".to_string(),
+        "timeout".to_string(),
+        "late".to_string(),
+        "regression".to_string(),
+    ];
+    c.evidence = vec![
+        Evidence::numeric("elapsed_ms", elapsed.as_millis() as f64),
+        Evidence::numeric("timeout_ms", timeout.as_millis() as f64),
+    ];
+    c
 }
 
 /// How one task ended when joined by [`join_with_deadline`].
@@ -551,6 +590,31 @@ mod tests {
         assert_eq!(check.verdict, Verdict::Fail);
         assert!(check.has_tag("timeout"));
         assert!(check.has_tag("regression"));
+    }
+
+    #[tokio::test]
+    async fn future_that_blocks_past_the_timeout_fails() {
+        // Blocks inside poll, so the timer cannot fire until it returns.
+        let check = run_with_timeout("blocks", Duration::from_millis(20), async {
+            std::thread::sleep(Duration::from_millis(150));
+        })
+        .await;
+        assert_eq!(check.verdict, Verdict::Fail);
+        assert_eq!(check.severity, Some(Severity::Error));
+        assert!(check.has_tag("late"));
+        assert!(check.has_tag("timeout"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn task_seen_finishing_after_the_deadline_fails() {
+        // On a current_thread runtime this task blocks the only thread,
+        // so the join only sees it finish after the deadline.
+        let h = tokio::spawn(async {
+            std::thread::sleep(Duration::from_millis(150));
+        });
+        let results = join_all_with_timeout("g", Duration::from_millis(20), vec![h]).await;
+        assert_eq!(results[0].verdict, Verdict::Fail, "{:?}", results[0].detail);
+        assert!(results[0].has_tag("late") || results[0].has_tag("timeout"));
     }
 
     #[tokio::test]
